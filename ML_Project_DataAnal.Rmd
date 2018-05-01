@@ -1,0 +1,591 @@
+---
+  title: "95-845: AA-MLP Project - analysis"
+  author: Eileen Patten
+  output:
+    html_document
+  fig_width: 7
+  fig_height: 5
+---
+
+```{r, warning=FALSE, echo=FALSE, include=FALSE}
+### Load helper packages ###
+loadlibs = function(libs) {
+  for(lib in libs) {
+    class(lib)
+    if(!do.call(require,as.list(lib))) {install.packages(lib)}
+    do.call(require,as.list(lib))
+  }
+}
+libs = c("ggplot2", "tidyr","magrittr","purrr","dplyr","stringr","readr","data.table", "lubridate", "qwraps2", "randomForest", "knitr", "twang", "glmnet", "scales", "keras", "stargazer", "MASS", "pROC", "DMwR", "nnet", "ROCR", "PredictABEL")
+loadlibs(libs)
+
+
+options(scipen=999)
+```
+
+```{r}
+setwd("C:/Users/EileenPatten/Documents/MLPipeline/Project") 
+load(file = "FINAL_red_ML.Rda") #original dataset
+
+```
+
+
+```{r}
+### This was one of my main sources for why to use an ordered logit and how to code it: https://www.princeton.edu/~otorres/LogitR101.pdf
+# The stargazer() function from the package -stargazer allows a publication quality of the logit model.
+# The model will be saved in the working directory under the name 'logit.htm' which you can open with Word or any other word processor.
+#stargazer(logit, type="html", out="logit.htm")
+
+#I started with murders and DUIs separate but this was way too many classes -- there were 0 preds in some of them
+red$toprearrest <- ifelse(red$murder==1 | red$felony==1, 2,
+                            ifelse(red$misdemeanor==1 | red$nongrade==1, 1, 0))
+red$toprearrest <- as.factor(red$toprearrest)
+table(red$toprearrest)
+
+#Format the varable for ordered logit
+model_data$toprearrest <- factor(red$toprearrest, levels=0:2, ordered=T)
+
+### Split data into train and test set (reused code from HW4)
+#First, I split the data into training (80%) and testing. 
+set.seed(123) 
+sample <- sample.int(n = nrow(model_data), size = floor(.8*nrow(model_data)), replace = F)
+train <- model_data[sample, ]
+test  <- model_data[-sample, ]
+
+#I was getting warning: design appears to be rank-deficient, so dropping some coefs
+#removed POSSESSED_USED becuase it was causing colinearity issues - it was nested with weapon type
+m.logit <- polr(toprearrest ~ . -POSSESSED_USED -race_new -age_new -dofage -sex_new,
+                data=train, Hess=TRUE)
+
+summary(m.logit)
+
+#Test proportional odds assumption: https://stats.idre.ucla.edu/r/dae/ordinal-logistic-regression/
+sf <- function(y) {
+  c('Y>=0' = qlogis(mean(y >= 0)),
+    'Y>=1' = qlogis(mean(y >= 1)),
+    'Y>=2' = qlogis(mean(y >= 2)))
+}
+
+(s <- with(train, summary(as.numeric(toprearrest) ~ . -POSSESSED_USED -race_new -age_new -dofage -sex_new, fun=sf)))
+glm(I(as.numeric(toprearrest) >= 1) ~ ENHANCEMENT_WEAPONS, family="binomial", data = train)
+glm(I(as.numeric(toprearrest) >= 2) ~ ENHANCEMENT_WEAPONS, family="binomial", data = train)
+#This does not look great across various Xs -- I am going to try an unordered logistic regression instead. 
+
+#On training data
+#m.pred.prob <- predict(m.logit, type="probs")
+#hist(m.pred.prob)
+#Interpretation of mean: The bold numbers are the predicted probabilities of each category when all predictors are at their mean value
+# summary(m.pred)
+# prop.table(table(model_data$toprearrest))
+#I think it's a good sign that these are aligned well
+
+m.pred.prob <- predict(m.logit, newdata = train, type="probs")
+#hist(m.pred.prob)
+#head(m.pred.prob)
+
+m.pred.prob <- as.data.frame(m.pred.prob)
+m.pred.prob$max_col <- apply(m.pred.prob, 1, max)
+#head(m.pred.prob)
+
+#compute mse using max prob
+#SHould MSE be computed for each class instead?
+rss <- sum((as.numeric(train$toprearrest) - m.pred.prob$max_col)^2, na.rm = TRUE)
+mse <- rss/nrow(train)
+mse
+
+#On training data
+m.pred.class <- predict(m.logit, newdata = train, type="class")
+caret::confusionMatrix(m.pred.class, train$toprearrest)
+
+t.pred.prob <- predict(m.logit, newdata = test, type="probs")
+#hist(m.pred.prob)
+#head(m.pred.prob)
+
+t.pred.prob <- as.data.frame(t.pred.prob)
+t.pred.prob$max_col <- apply(t.pred.prob, 1, max)
+#head(m.pred.prob)
+
+#compute mse using max prob
+t.rss <- sum((as.numeric(test$toprearrest) - t.pred.prob$max_col)^2, na.rm = TRUE)
+t.mse <- rss/nrow(test)
+t.mse
+#Can I have an mse of 2 when my y is only 0 thru 2? That would mean my mean error is 1.52, which is really bad...
+
+#On test data
+t.pred.class <- predict(m.logit, newdata = test, type="class")
+t.pred.conf <- caret::confusionMatrix(t.pred.class, test$toprearrest)
+prop.table(table(test$toprearrest))
+hist(t.pred.prob$max_col)
+
+t.pred.Norecid.acc <- t.pred.conf$table[1,1]/sum(t.pred.conf$table[,1])
+t.pred.Misd.acc <- t.pred.conf$table[2,2]/sum(t.pred.conf$table[,2])
+t.pred.Fel.acc <- t.pred.conf$table[3,3]/sum(t.pred.conf$table[,3])
+
+#AUC -- I don't know if I'm doing this right
+#Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+simple_roc <- function(labels, scores){
+  labels <- labels[order(scores, decreasing=TRUE)]
+  data.frame(TPR=cumsum(labels)/sum(labels), FPR=cumsum(!labels)/sum(!labels), labels)
+}
+
+#Felony vs. other
+bin.felony <- test$toprearrest
+bin.felony[bin.felony=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.felony[bin.felony=="2"] <- "1"
+bin.felony <- as.integer(bin.felony)
+
+simple_roc(bin.felony, t.pred.prob$`2`)
+roc(bin.felony, t.pred.prob$`2`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(t.pred.prob$'2')
+
+#Misd vs. other
+bin.misd <- test$toprearrest
+bin.misd[bin.misd=="2"] <- "0" #Collapses felonies with no recidivism 
+bin.misd <- as.integer(bin.misd)
+
+simple_roc(bin.misd, t.pred.prob$`1`)
+roc(bin.misd, t.pred.prob$`1`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(t.pred.prob$'1')
+
+#No recidivism vs. other
+bin.norecid <- test$toprearrest
+bin.norecid[bin.norecid=="2"] <- "1" #Collapses misd and fels 
+bin.norecid <- as.integer(bin.norecid)
+
+simple_roc(bin.norecid, t.pred.prob$`0`)
+roc(bin.norecid, t.pred.prob$`0`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(t.pred.prob$'0')
+
+
+```
+```{r}
+#Mutliple logistic regression
+m.mlr <- multinom(toprearrest ~ . -POSSESSED_USED -race_new -age_new -dofage -sex_new,
+                data=train)
+
+summary(m.mlr)
+
+mlr.pred.prob <- predict(m.mlr, newdata = train, type="probs")
+#hist(mlr.pred.prob)
+#head(mlr.pred.prob)
+
+mlr.pred.prob <- as.data.frame(mlr.pred.prob)
+mlr.pred.prob$max_col <- apply(mlr.pred.prob, 1, max)
+#head(mlr.pred.prob)
+
+#compute mse using max prob
+#SHould MSE be computed for each class instead?
+rss <- sum((as.numeric(train$toprearrest) - mlr.pred.prob$max_col)^2, na.rm = TRUE)
+mse <- rss/nrow(train)
+mse
+
+#On training data
+mlr.pred.class <- predict(m.mlr, newdata = train, type="class")
+caret::confusionMatrix(mlr.pred.class, train$toprearrest)
+
+#On test data
+tmlr.pred.prob <- predict(m.mlr, newdata = test, type="probs")
+#hist(mlr.pred.prob)
+#head(mlr.pred.prob)
+
+tmlr.pred.prob <- as.data.frame(tmlr.pred.prob)
+tmlr.pred.prob$max_col <- apply(tmlr.pred.prob, 1, max)
+#head(mlr.pred.prob)
+
+#compute mse using max prob
+tmlr.rss <- sum((as.numeric(test$toprearrest) - tmlr.pred.prob$max_col)^2, na.rm = TRUE)
+tmlr.mse <- rss/nrow(test)
+tmlr.mse
+#Can I have an mse of 2 when my y is only 0 thru 2? That would mean my mean error is 1.52, which is really bad...
+
+tmlr.pred.class <- predict(m.logit, newdata = test, type="class")
+tmlr.pred.conf <- caret::confusionMatrix(tmlr.pred.class, test$toprearrest)
+prop.table(table(test$toprearrest))
+hist(tmlr.pred.prob$max_col)
+
+#AUC -- I don't know if I'm doing this right
+#Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+simple_roc <- function(labels, scores){
+  labels <- labels[order(scores, decreasing=TRUE)]
+  data.frame(TPR=cumsum(labels)/sum(labels), FPR=cumsum(!labels)/sum(!labels), labels)
+}
+
+#Felony vs. other
+bin.mlr.felony <- test$toprearrest
+bin.mlr.felony[bin.mlr.felony=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.mlr.felony[bin.mlr.felony=="2"] <- "1"
+bin.mlr.felony <- as.integer(bin.mlr.felony)
+
+simple_roc(bin.mlr.felony, tmlr.pred.prob$`2`)
+roc(bin.mlr.felony, tmlr.pred.prob$`2`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(tmlr.pred.prob$'2')
+mean(na.omit(tmlr.pred.prob$'2'))
+
+#Misd vs. other
+bin.mlr.misd <- test$toprearrest
+bin.mlr.misd[bin.mlr.misd=="2"] <- "0" #Collapses felonies with no recidivism 
+bin.mlr.misd <- as.integer(bin.mlr.misd)
+
+simple_roc(bin.mlr.misd, tmlr.pred.prob$`1`)
+roc(bin.mlr.misd, tmlr.pred.prob$`1`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(tmlr.pred.prob$'1')
+
+#No recidivism vs. other
+bin.mlr.norecid <- test$toprearrest
+bin.mlr.norecid[bin.mlr.norecid=="2"] <- "1" #Collapses misd and fels 
+bin.mlr.norecid <- as.integer(bin.mlr.norecid)
+
+simple_roc(bin.mlr.norecid, tmlr.pred.prob$`0`)
+roc(bin.mlr.norecid, tmlr.pred.prob$`0`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(tmlr.pred.prob$'0')
+
+
+```
+```{r}
+
+##CHECK AUCS OF TRAINING DATA TO MAKE SURE I'M NOT OVERFITT
+#Felony vs. other
+bin.train.mlr.felony <- train$toprearrest
+bin.train.mlr.felony[bin.train.mlr.felony=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.train.mlr.felony[bin.train.mlr.felony=="2"] <- "1"
+bin.train.mlr.felony <- as.integer(bin.train.mlr.felony)
+
+simple_roc(bin.train.mlr.felony, mlr.pred.prob$`2`)
+roc(bin.train.mlr.felony, mlr.pred.prob$`2`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+
+#Misd vs. other
+bin.train.mlr.misd <- train$toprearrest
+bin.train.mlr.misd[bin.train.mlr.misd=="2"] <- "0" #Collapses felonies with no recidivism 
+bin.train.mlr.misd <- as.integer(bin.train.mlr.misd)
+
+simple_roc(bin.train.mlr.misd, mlr.pred.prob$`1`)
+roc(bin.train.mlr.misd, mlr.pred.prob$`1`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+
+#No recidivism vs. other
+bin.train.mlr.norecid <- train$toprearrest
+bin.train.mlr.norecid[bin.train.mlr.norecid=="2"] <- "1" #Collapses misd and fels 
+bin.train.mlr.norecid <- as.integer(bin.train.mlr.norecid)
+
+simple_roc(bin.train.mlr.norecid, mlr.pred.prob$`0`)
+roc(bin.train.mlr.norecid, mlr.pred.prob$`0`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+```
+
+```{r}
+#Mutliple logistic regression - with demographics included
+dem.mlr <- multinom(toprearrest ~ . -POSSESSED_USED -age_new,
+                data=train)
+
+summary(dem.mlr)
+
+dem.mlr.pred.prob <- predict(dem.mlr, newdata = train, type="probs")
+#hist(dem.mlr.pred.prob)
+#head(dem.mlr.pred.prob)
+
+dem.mlr.pred.prob <- as.data.frame(dem.mlr.pred.prob)
+dem.mlr.pred.prob$max_col <- apply(dem.mlr.pred.prob, 1, max)
+#head(dem.mlr.pred.prob)
+
+#compute mse using max prob
+#SHould MSE be computed for each class instead?
+rss <- sum((as.numeric(train$toprearrest) - dem.mlr.pred.prob$max_col)^2, na.rm = TRUE)
+mse <- rss/nrow(train)
+mse
+
+#On training data
+dem.mlr.pred.class <- predict(dem.mlr, newdata = train, type="class")
+caret::confusionMatrix(dem.mlr.pred.class, train$toprearrest)
+
+#On test data
+tdem.mlr.pred.prob <- predict(dem.mlr, newdata = test, type="probs")
+#hist(dem.mlr.pred.prob)
+#head(dem.mlr.pred.prob)
+
+tdem.mlr.pred.prob <- as.data.frame(tdem.mlr.pred.prob)
+tdem.mlr.pred.prob$max_col <- apply(tdem.mlr.pred.prob, 1, max)
+#head(dem.mlr.pred.prob)
+
+#compute mse using max prob
+tdem.mlr.rss <- sum((as.numeric(test$toprearrest) - tdem.mlr.pred.prob$max_col)^2, na.rm = TRUE)
+tdem.mlr.mse <- rss/nrow(test)
+tdem.mlr.mse
+#Can I have an mse of 2 when my y is only 0 thru 2? That would mean my mean error is 1.52, which is really bad...
+
+tdem.mlr.pred.class <- predict(m.logit, newdata = test, type="class")
+tdem.mlr.pred.conf <- caret::confusionMatrix(tdem.mlr.pred.class, test$toprearrest)
+prop.table(table(test$toprearrest))
+hist(tdem.mlr.pred.prob$max_col)
+
+#AUC -- I don't know if I'm doing this right
+#Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+simple_roc <- function(labels, scores){
+  labels <- labels[order(scores, decreasing=TRUE)]
+  data.frame(TPR=cumsum(labels)/sum(labels), FPR=cumsum(!labels)/sum(!labels), labels)
+}
+
+#Felony vs. other
+bin.dem.mlr.felony <- test$toprearrest
+bin.dem.mlr.felony[bin.dem.mlr.felony=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.dem.mlr.felony[bin.dem.mlr.felony=="2"] <- "1"
+bin.dem.mlr.felony <- as.integer(bin.dem.mlr.felony)
+
+simple_roc(bin.dem.mlr.felony, tdem.mlr.pred.prob$`2`)
+roc(bin.dem.mlr.felony, tdem.mlr.pred.prob$`2`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(tdem.mlr.pred.prob$'2')
+
+#Misd vs. other
+bin.dem.mlr.misd <- test$toprearrest
+bin.dem.mlr.misd[bin.dem.mlr.misd=="2"] <- "0" #Collapses felonies with no recidivism 
+bin.dem.mlr.misd <- as.integer(bin.dem.mlr.misd)
+
+simple_roc(bin.dem.mlr.misd, tdem.mlr.pred.prob$`1`)
+roc(bin.dem.mlr.misd, tdem.mlr.pred.prob$`1`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(tdem.mlr.pred.prob$'1')
+
+#No recidivism vs. other
+bin.dem.mlr.norecid <- test$toprearrest
+bin.dem.mlr.norecid[bin.dem.mlr.norecid=="2"] <- "1" #Collapses misd and fels 
+bin.dem.mlr.norecid <- as.integer(bin.dem.mlr.norecid)
+
+simple_roc(bin.dem.mlr.norecid, tdem.mlr.pred.prob$`0`)
+roc(bin.dem.mlr.norecid, tdem.mlr.pred.prob$`0`, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hist(tdem.mlr.pred.prob$'0')
+```
+
+
+```{r}
+#Binary prediction of felony recidivism
+Fmodel_data <- model_data
+Fmodel_data$FelRearrest <- ifelse((red$murder==1 | red$felony==1), 1, 0)
+Fmodel_data$FelRearrest <- as.factor(Fmodel_data$FelRearrest)
+table(Fmodel_data$FelRearrest)
+
+set.seed(123) 
+Fsample <- sample.int(n = nrow(Fmodel_data), size = floor(.8*nrow(Fmodel_data)), replace = F)
+Ftrain <- Fmodel_data[sample, ]
+Ftest  <- Fmodel_data[-sample, ]
+
+m.glm <- glm(FelRearrest ~ . -toprearrest -POSSESSED_USED -race_new -age_new -dofage -sex_new,
+                data=Ftrain, family = binomial())
+
+#Demographic version
+m.glm.dem <- glm(FelRearrest ~ . -toprearrest -POSSESSED_USED -age_new,
+                data=Ftrain, family = binomial())
+
+summary(m.glm)
+```
+
+```{r}
+
+#On training data
+glm.pred.class <- as.factor(round(m.glm$fitted))
+glm.y <- as.factor(round(m.glm$y))
+caret::confusionMatrix(glm.pred.class, glm.y)
+
+#On test data
+glm.test.probs <- predict(m.glm, Ftest, type = "response")
+glm.test.preds <- as.factor(round(glm.test.probs))
+glm.test.y <- as.factor(Ftest$FelRearrest)
+caret::confusionMatrix(glm.test.preds, glm.test.y)
+
+#AUC -- I don't know if I'm doing this right
+#Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+glm.test.y <- as.integer(Ftest$FelRearrest)
+simple_roc(glm.test.y, glm.test.probs)
+roc(glm.test.y, glm.test.probs, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+#Demog version
+#On training data
+glm.pred.class.d <- as.factor(round(m.glm.dem$fitted))
+glm.y.d <- as.factor(round(m.glm.dem$y))
+caret::confusionMatrix(glm.pred.class.d, glm.y.d)
+
+#On test data
+glm.test.probs.d <- predict(m.glm.dem, Ftest, type = "response")
+glm.test.preds.d <- as.factor(round(glm.test.probs.d))
+glm.test.y <- as.factor(Ftest$FelRearrest)
+caret::confusionMatrix(glm.test.preds.d, glm.test.y)
+
+#AUC -- I don't know if I'm doing this right
+#Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+glm.test.y <- as.integer(Ftest$FelRearrest)
+simple_roc(glm.test.y, glm.test.probs.d)
+roc(glm.test.y, glm.test.probs.d, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+```
+
+```{r}
+# ###RANDOM FOREST
+# #Commenting so I don't accidentally run again - takes a LONG time
+# forest <- randomForest(toprearrest ~ . -POSSESSED_USED -race_new -age_new -dofage -sex_new,
+#                        data=train, na.action = na.omit, importance = TRUE)
+# 
+# forest.preds <- predict(forest, test, type = "class") 
+# forest.probs <- predict(forest, test, type = "prob") 
+# forest.probs <- as.data.frame(forest.probs)
+# forest.probs$max_col <- apply(forest.probs, 1, max)
+# forest.preds <- as.factor(forest.preds)
+# forest.y <- as.factor(test$toprearrest)
+# #caret::confusionMatrix(forest.preds, forest.y)
+# #round(importance(iris.rf), 2)
+# 
+# #AUC -- I don't know if I'm doing this right
+# #Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+# simple_roc(bin.misd, forest.probs$"1")
+# roc(bin.misd, forest.probs$"1", auc = TRUE, plot = TRUE, print.auc = TRUE)
+# 
+# simple_roc(bin.norecid, forest.probs$"0")
+# roc(bin.norecid, forest.probs$"0", auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+```
+
+
+```{r}
+#Binary prediction of felony recidivism
+Fmodel_data <- model_data
+Fmodel_data$FelRearrest <- ifelse((red$murder==1 | red$felony==1), 1, 0)
+Fmodel_data$FelRearrest <- as.factor(Fmodel_data$FelRearrest)
+table(Fmodel_data$FelRearrest)
+
+set.seed(123) 
+Fsample <- sample.int(n = nrow(Fmodel_data), size = floor(.8*nrow(Fmodel_data)), replace = F)
+Ftrain <- Fmodel_data[sample, ]
+Ftest  <- Fmodel_data[-sample, ]
+
+m.glm <- glm(FelRearrest ~ . -toprearrest -POSSESSED_USED -race_new -age_new -dofage -sex_new,
+                data=Ftrain, family = binomial())
+
+#Demographic version
+m.glm.dem <- glm(FelRearrest ~ . -toprearrest -POSSESSED_USED -age_new,
+                data=Ftrain, family = binomial())
+
+summary(m.glm)
+```
+
+```{r}
+#Analysis of fairness by race
+mlr.full.probs <- predict(m.mlr, newdata = model_data, type="probs")
+mlr.full.preds <- predict(m.mlr, newdata = model_data, type="class") 
+  
+#What is the breakdown of felony rearrests by race in our data?
+prop.table(table(model_data$toprearrest, model_data$race_new),2)
+prop.table(table(model_data$toprearrest))
+
+model_data$max_pred <- mlr.full.preds  
+model_data$prob_fel <- mlr.full.probs[,3]
+
+top_quartile <- quantile(model_data$prob_fel, c(.75), na.rm = TRUE) 
+top_quartile 
+table(model_data$prob_fel>top_quartile)
+prop.table(table(model_data$prob_fel>top_quartile))
+
+
+#What is the breakdown of felony rearrests by race in our data?
+prop.table(table(model_data$max_pred, model_data$race_new),2)
+prop.table(table(model_data$max_pred))
+
+#Analysis of fairness by race -- USING THE MODEL TAHT INCLUDES DEMOGRAPHICS
+dem.mlr.full.probs <- predict(dem.mlr, newdata = model_data, type="probs")
+dem.mlr.full.preds <- predict(dem.mlr, newdata = model_data, type="class") 
+
+model_data$max_pred_dem <- dem.mlr.full.preds  
+model_data$max_prob_dem <- dem.mlr.full.probs  
+
+#What is the breakdown of felony rearrests by race predicted in our data?
+prop.table(table(model_data$max_pred_dem, model_data$race_new),2)
+prop.table(table(model_data$max_pred_dem))
+
+#Analysis of fairness by race -- USING THE MODEL TAHT INCLUDES DEMOGRAPHICS BUT REMOVING RACE INFO BY SETTING EVERYONE TO WHITE
+model_data_race_remove <- model_data
+model_data_race_remove$race_new <- "Black"
+model_data_race_remove$race_new <- as.factor(model_data_race_remove$race_new)
+
+demrr.mlr.full.probs <- predict(dem.mlr, newdata = model_data_race_remove, type="probs")
+demrr.mlr.full.preds <- predict(dem.mlr, newdata = model_data_race_remove, type="class") 
+
+model_data$max_pred_demrr <- demrr.mlr.full.preds  
+model_data$max_prob_demrr <- demrr.mlr.full.probs  
+
+#What is the breakdown of felony rearrests by race predicted in our data?
+prop.table(table(model_data$max_pred_demrr, model_data$race_new),2)
+prop.table(table(model_data$max_pred_demrr))
+
+#AUC -- I don't know if I'm doing this right
+#Source:http://blog.revolutionanalytics.com/2016/08/roc-curves-in-two-lines-of-code.html
+model_data_black <- subset(model_data, race_new == "Black")
+model_data_white <- subset(model_data, race_new == "White")
+model_data_hisp <- subset(model_data, race_new == "Hispanic")
+
+#Impact of top quartile rule by race
+prop.table(table(model_data_black$prob_fel>top_quartile))
+prop.table(table(model_data_white$prob_fel>top_quartile))
+prop.table(table(model_data_hisp$prob_fel>top_quartile))
+
+#felony histograms by race
+hist(model_data_black$prob_fel, main = "Black")
+hist(model_data_white$prob_fel, main = "White")
+hist(model_data_hisp$prob_fel)
+
+#Black ROC
+bin.felony.bl <- model_data_black$toprearrest
+bin.felony.bl[bin.felony.bl=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.felony.bl[bin.felony.bl=="2"] <- "1"
+bin.felony.bl <- as.integer(bin.felony.bl)
+
+simple_roc(bin.felony.bl, model_data_black$prob_fel)
+roc(bin.felony.bl, model_data_black$prob_fel, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+mean(na.omit(model_data_black$prob_fel))
+table(model_data_black$prob_fel>(1.5*mean(na.omit(model_data_black$prob_fel))))
+prop.table(table(model_data_black$prob_fel>(1.5*mean(na.omit(model_data_black$prob_fel)))))
+
+black_mean <- as.numeric(prop.table(table(bin.felony.bl))[2])
+black_tile <- quantile(model_data_black$prob_fel, c(1-black_mean), na.rm = TRUE) 
+black_tile
+table(model_data_black$prob_fel>black_tile)
+
+#White ROC
+bin.felony.wh <- model_data_white$toprearrest
+bin.felony.wh[bin.felony.wh=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.felony.wh[bin.felony.wh=="2"] <- "1"
+bin.felony.wh <- as.integer(bin.felony.wh)
+
+simple_roc(bin.felony.wh, model_data_white$prob_fel)
+roc(bin.felony.wh, model_data_white$prob_fel, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+mean(na.omit(model_data_white$prob_fel))
+table(model_data_white$prob_fel>(1.5*mean(na.omit(model_data_white$prob_fel))))
+prop.table(table(model_data_white$prob_fel>(1.5*mean(na.omit(model_data_white$prob_fel)))))
+
+white_mean <- as.numeric(prop.table(table(bin.felony.wh))[2])
+white_tile <- quantile(model_data_white$prob_fel, c(1-white_mean), na.rm = TRUE) 
+white_tile
+table(model_data_white$prob_fel>white_tile)
+
+#Hispanic ROC
+bin.felony.hisp <- model_data_hisp$toprearrest
+bin.felony.hisp[bin.felony.hisp=="1"] <- "0" #Collapses misdemeanors with no recidivism 
+bin.felony.hisp[bin.felony.hisp=="2"] <- "1"
+bin.felony.hisp <- as.integer(bin.felony.hisp)
+
+simple_roc(bin.felony.hisp, model_data_hisp$prob_fel)
+roc(bin.felony.hisp, model_data_hisp$prob_fel, auc = TRUE, plot = TRUE, print.auc = TRUE)
+
+hisp_mean <- as.numeric(prop.table(table(bin.felony.hisp))[2])
+hisp_tile <- quantile(model_data_hisp$prob_fel, c(1-hisp_mean), na.rm = TRUE) 
+hisp_tile
+table(model_data_hisp$prob_fel>hisp_tile)
+
+```
+

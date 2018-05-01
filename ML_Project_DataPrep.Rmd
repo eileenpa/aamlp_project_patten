@@ -32,35 +32,36 @@ load(file = "PCS_Recidivism_04_06_AlexC.Rda") #original dataset
 ###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES 
 We selected 649 out of them, mainly deleting the movements of the inchoates while in jail and administrative variables from the "current crime".
 ```{r}
-red <- df %>% select(2:5, 7, 14:16, 18, 
+#Commented out because I build this into the synthetic data file
+red <- df %>% select(2:5, 7, 14:16, 18,
                        126, 630, 631, 944:946, 680:683,#sex and race
                        171:174,  # offender age at time of offense, dates of offense and sentence
                        186, 191, # arrest date
                        21:23, #judge name DELETE
                        34, #PK of offenses
-                       61, #completed or uncompleted crime 
+                       61, #completed or uncompleted crime
                        68,142, #type of incarceration (if any)
                        84,89:90, 636:638, 646:662, 739, #about the crime and it seriousness
                        678, 942, # OGS scores
                        117:125, 605, # punishment info
                        43, 193, 629, 738, # sentence start, year of sentence, county
                        130:133, 141, 150, # probation dates and indicators
-                       52, #comment on the sentence        
+                       52, #comment on the sentence
                        53, 97:99 , #conformity to guideline and reasons for being out of the guidelines
                        59, 102:106, #guidelines
                        155, 194,# sentencing guideline level (5 colors in matrix)
                        55, 113, #info of drug amount
-                       56:58 , 164, #enhancements increasing OGS           
+                       56:58 , 164, #enhancements increasing OGS
                        286:327, 671:677, # prior charges
                        328:367, # juvenile record
-                       368:407, #adult record        
+                       368:407, #adult record
                        408:447, 697:729, # first charges
                        448:487, 623:628, # yr1 after release felonies
                        488:527, 617:622, # yr2 felonies
                        528:567, 689:692, 695:696, # yr3 felonies
                        569:572, 574:576, 585, 741, # Release date,escape flag, sex, and race prior
-                       607, # Type of sanction given; 
-                       684:685, 744, 743, 693:694,  # years of follow up, rearrest    
+                       607, # Type of sanction given;
+                       684:685, 744, 743, 693:694,  # years of follow up, rearrest
                        734,737,740,745,751,
                        753:ncol(df))
 
@@ -268,5 +269,76 @@ red$PRSCONV40_89 <- red$PRSCONV_40 + red$PRSCONV_89
 drop <- c("PRSCONV_9","PRSCONV_49","red$PRSCONV_1", "red$PRSCONV_41", "red$PRSCONV_2",  "red$PRSCONV_42", "red$PRSCONV_3",  "red$PRSCONV_43", "red$PRSCONV_4", "red$PRSCONV_44", "red$PRSCONV_5",  "red$PRSCONV_45", "red$PRSCONV_8",  "red$PRSCONV_48",  "red$PRSCONV_9",  "red$PRSCONV_49", "red$PRSCONV_10", "red$PRSCONV_59", "red$PRSCONV_11", "red$PRSCONV_50", "red$PRSCONV_12", "red$PRSCONV_58", "red$PRSCONV_13", "red$PRSCONV_61",  "red$PRSCONV_18", "red$PRSCONV_62", "red$PRSCONV_19", "red$PRSCONV_51", "red$PRSCONV_20", "red$PRSCONV_53", "red$PRSCONV_21", "red$PRSCONV_63", "red$PRSCONV_22", "red$PRSCONV_65",  "red$PRSCONV_23", "red$PRSCONV_64", "red$PRSCONV_24", "red$PRSCONV_66", "red$PRSCONV_25", "red$PRSCONV_67", "red$PRSCONV_26", "red$PRSCONV_68", "red$PRSCONV_28", "red$PRSCONV_71",  "red$PRSCONV_29", "red$PRSCONV_72", "red$PRSCONV_30", "red$PRSCONV_74", "red$PRSCONV_31", "red$PRSCONV_75", "red$PRSCONV_32", "red$PRSCONV_78", "red$PRSCONV_33", "red$PRSCONV_79",  "red$PRSCONV_34", "red$PRSCONV_80", "red$PRSCONV_35", "red$PRSCONV_81", "red$PRSCONV_36", "red$PRSCONV_82", "red$PRSCONV_37", "red$PRSCONV_83", "red$PRSCONV_38", "red$PRSCONV_84",  "red$PRSCONV_39", "red$PRSCONV_76", "red$PRSCONV_40", "red$PRSCONV_89", "PRSCONV_46","PRSCONV_7")
 red = red[,!(names(red) %in% drop)]
 
+###SELECTING THE FEATURES I WANT IN MY MODEL
+
+###subset data to use in the models
+#str(red, list.len=ncol(red))
+#MANY of these variables are future-looking and inappropriate to include in the model or are factors the judge/judicial system would not have access to for one reason or another
+
+#Make same change to murder as in data prep for the outcome variable
+red$tPersonalF_adult <- red$tPersonalF_adult - red$tmurder_adult
+
+
+model_data_selections<- c("toprearrest", "PRSCONV1_41", "PRSCONV2_42", "PRSCONV3_43", "PRSCONV4_44", "PRSCONV5_45", "PRSCONV_6", "PRSCONV8_48", "PRSCONV9_49", "PRSCONV10_59", "PRSCONV11_50", "PRSCONV12_58", "PRSCONV13_61", "PRSCONV_14", "PRSCONV_15", "PRSCONV_16", "PRSCONV_17", "PRSCONV18_62", "PRSCONV19_51", "PRSCONV20_53", "PRSCONV21_63", "PRSCONV22_65", "PRSCONV23_64", "PRSCONV24_66", "PRSCONV25_67", "PRSCONV26_68", "PRSCONV_27", "PRSCONV28_71", "PRSCONV29_72", "PRSCONV30_74", "PRSCONV31_75", "PRSCONV32_78", "PRSCONV33_79", "PRSCONV34_80", "PRSCONV35_81", "PRSCONV36_82", "PRSCONV37_83", "PRSCONV38_84", "PRSCONV39_76", "PRSCONV40_89", "PRSCONV_47",  "PRSCONV_52", "PRSCONV_54", "PRSCONV_55", "PRSCONV_56", "PRSCONV_57",  "PRSCONV_60", "PRSCONV_61",  "PRSCONV_69", "PRSCONV_70", "PRSCONV_73",  "PRSCONV_77", "PRSCONV_85", "PRSCONV_86", "PRSCONV_87", "PRSCONV_88", "tburglary_adult", "tpropertyF_adult", "tpropertyM_adult", "tPersonalM_adult", "tPersonalF_adult", "tSexOF_adult", "tSexOM_adult", "tDrugF_adult", "tDrugM_adult", "tDUI_adult", "tOtherTraffic_adult", "tFirearms_adult", "tOtherweapons_adult", "tdomestic_adult", "tabscond_adult", "tconspiracy_adult", "tPublicOrder_adult", "tPublicAdm_adult", "tmurder_adult", "AgeFirstArrest18", "rate_offense", "drug", "ENHANCEMENT_WEAPONS", "POSSESSED_USED", "race_new", "age_new", "dofage", "sex_new")
+model_data <- red[model_data_selections]
+
+###CHECKING ALL THE VARIABLES THAT REMAIN
+#Drop any crime variables that have fewer than 50 people who have ever committed this crime in our data
+#To find these cases
+# for(i in 2:ncol(model_data)) {
+#   true <- (model_data[i]>0)
+#   numtrue <- sum(true)
+#   print(colnames(model_data)[i])
+#   print(numtrue)
+# }
+
+drop <- c("PRSCONV_6", "PRSCONV8_48", "PRSCONV10_59", "PRSCONV12_58", "PRSCONV_27", "PRSCONV30_74",
+          "PRSCONV31_75", "PRSCONV33_79", "PRSCONV35_81",  "PRSCONV37_83", "PRSCONV_52",  "PRSCONV_54",
+          "PRSCONV_55", "PRSCONV_56", "PRSCONV_57",  "PRSCONV_60", "PRSCONV_61", "PRSCONV_69",
+          "PRSCONV_70", "PRSCONV_73", "PRSCONV_85")
+model_data = model_data[,!(names(model_data) %in% drop)]
+
+#table(model_data$AgeFirstArrest18)
+#table(model_data$rate_offense)
+#table(red$totalpriorcharges_adult)
+
+#table(model_data$drug)
+#Collapsing some levels of factors that are sparsely populated into "Other" categories
+#Anything with less than 50 cases in drug
+model_data$drug[model_data$drug=="Designer Drugs" | model_data$drug=="Steroids" | model_data$drug=="Ectasy"] <- "Other Drug Offenses"
+model_data$drug <- factor(model_data$drug) #drops factors with 0 cases
+
+# levels(model_data$ENHANCEMENT_WEAPONS)
+#(model_data$ENHANCEMENT_WEAPONS)
+#Collapsing the gun categories -- in this case I am going to leave blunt instrument even though it has 37 observations because there's not an obvious category to wrap it in with
+levels(model_data$ENHANCEMENT_WEAPONS) <- c(levels(model_data$ENHANCEMENT_WEAPONS),"Firearm", "No Weapon", "Other/Unknown Weapon")
+model_data$ENHANCEMENT_WEAPONS[model_data$ENHANCEMENT_WEAPONS=="HandGun/Pistol/Revolver" |
+                               model_data$ENHANCEMENT_WEAPONS=="Long Gun/Rifle/Shotgun" |
+                               model_data$ENHANCEMENT_WEAPONS=="Gun/Other"] <- "Firearm"
+model_data$ENHANCEMENT_WEAPONS[model_data$ENHANCEMENT_WEAPONS==""] <- "No Weapon"
+model_data$ENHANCEMENT_WEAPONS[model_data$ENHANCEMENT_WEAPONS=="Other Weapon" |
+                               model_data$ENHANCEMENT_WEAPONS=="Unknown Weapon"] <- "Other/Unknown Weapon"
+model_data$ENHANCEMENT_WEAPONS <- factor(model_data$ENHANCEMENT_WEAPONS) #drops factors with 0 cases
+
+#table(model_data$POSSESSED_USED)
+
+#table(model_data$race_new)
+#Note: I am not trying to impute some of these, like race, because this is already an imputed variable
+model_data$race_new[model_data$race_new=="Unknown"] <- "Other"
+model_data$race_new <- factor(model_data$race_new) #drops factors with 0 cases
+
+#table(model_data$age_new)
+model_data$age_new <- factor(model_data$age_new) #drops factors with 0 cases
+
+#table(as.integer(model_data$dofage))
+
+#table(model_data$sex_new)
+model_data$sex_new <- factor(model_data$sex_new) #drops factors with 0 cases
+
+#table(model_data$tot_conv)
+
+
 save(red, file = "FINAL_red_ML.Rda")
+
+
 ```
