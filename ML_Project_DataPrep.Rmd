@@ -1,0 +1,272 @@
+---
+  title: "95-845: AA-MLP Project"
+  author: Eileen Patten
+  output:
+    html_document
+  fig_width: 7
+  fig_height: 5
+---
+
+```{r, warning=FALSE, echo=FALSE, include=FALSE}
+### Load helper packages ###
+loadlibs = function(libs) {
+  for(lib in libs) {
+    class(lib)
+    if(!do.call(require,as.list(lib))) {install.packages(lib)}
+    do.call(require,as.list(lib))
+  }
+}
+libs = c("tidyr","magrittr","purrr","dplyr","stringr","readr","data.table", "lubridate", "qwraps2", "randomForest", "pROC", "ggplot2", "knitr", "twang", "glmnet", "scales", "keras")
+loadlibs(libs)
+
+
+options(scipen=999)
+```
+
+The original dataset has 947 features and 131,076 observations. We classify the features broadly as features from previous history, current crime, from the person (demographics), guidelines of sentence, movements during incaceration, and features describing behavior after release.
+```{r}
+setwd("C:/Users/EileenPatten/Documents/MLPipeline/Project") 
+load(file = "PCS_Recidivism_04_06_AlexC.Rda") #original dataset
+```
+
+###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES 
+We selected 649 out of them, mainly deleting the movements of the inchoates while in jail and administrative variables from the "current crime".
+```{r}
+red <- df %>% select(2:5, 7, 14:16, 18, 
+                       126, 630, 631, 944:946, 680:683,#sex and race
+                       171:174,  # offender age at time of offense, dates of offense and sentence
+                       186, 191, # arrest date
+                       21:23, #judge name DELETE
+                       34, #PK of offenses
+                       61, #completed or uncompleted crime 
+                       68,142, #type of incarceration (if any)
+                       84,89:90, 636:638, 646:662, 739, #about the crime and it seriousness
+                       678, 942, # OGS scores
+                       117:125, 605, # punishment info
+                       43, 193, 629, 738, # sentence start, year of sentence, county
+                       130:133, 141, 150, # probation dates and indicators
+                       52, #comment on the sentence        
+                       53, 97:99 , #conformity to guideline and reasons for being out of the guidelines
+                       59, 102:106, #guidelines
+                       155, 194,# sentencing guideline level (5 colors in matrix)
+                       55, 113, #info of drug amount
+                       56:58 , 164, #enhancements increasing OGS           
+                       286:327, 671:677, # prior charges
+                       328:367, # juvenile record
+                       368:407, #adult record        
+                       408:447, 697:729, # first charges
+                       448:487, 623:628, # yr1 after release felonies
+                       488:527, 617:622, # yr2 felonies
+                       528:567, 689:692, 695:696, # yr3 felonies
+                       569:572, 574:576, 585, 741, # Release date,escape flag, sex, and race prior
+                       607, # Type of sanction given; 
+                       684:685, 744, 743, 693:694,  # years of follow up, rearrest    
+                       734,737,740,745,751,
+                       753:ncol(df))
+
+```
+
+###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES 
+In many cases if there were not prior charges, the feature AgeFirstArrest was missing. Then, we imputed it with the age of the offender, modifying 1400 cases. With this, we only have 11 missing cases.
+```{r}
+red<-red %>%
+  mutate(AgeFirstArrest = ifelse(totalpriorcharges==0,floor(dofage),AgeFirstArrest) #imputing missing data on AgeFirstArrest
+        )
+```
+
+##ADDED BY EILEEN -- A BIT MORE STRAIGHTFORWARD THAN THE WAY WE WERE DOING IT IN OUR SYSTEMS CODE
+Because there are some dob entered incorrectly in the system, there are some offenders who have a date of offense age that is negative or less than 18 (907). Dropping these cases. 
+```{r}
+#table(as.integer(red$dofage))
+#table(red$dofage<18)
+red<- red %>%
+  filter(is.na(dofage) | (dofage >= 18 & dofage <= 90)) 
+         
+```
+
+###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES 
+###I ADDED THE CEILING AT 90 BECAUSE I DON'T THINK THAT AGES ABOVE THAT ARE VALID
+RAP sheets data on juvenile records is not accurate, so we put the minimum age of first arrest on 18. This modifies 21747 cases. 16661 of those cases were 15 or older. 41 were negative and 45 were zero. Since these individuals likely had some juvenile crimes, but this just isn't likely a full record, we think a base of 18 is reasonable. It is more likely that there are now some over 18 for age of first crime that should be set to 18 but had missing juvenile records. Since we only have a date for the first crime in their record, there is nothing we can do about this. 
+```{r}
+red<-red %>%
+  mutate(AgeFirstArrest18 = ifelse(AgeFirstArrest<18,18,
+                                   ifelse(AgeFirstArrest>90,90,
+                                          AgeFirstArrest))) 
+
+#table(red$AgeFirstArrest18)                                  
+```
+
+###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES BUT EDITED BY EP
+Additionally, we created new variables related to the length of criminal career, total convictions and number of crimes per year.
+```{r}
+red <- red %>%
+  mutate(age_difference = dofage - AgeFirstArrest18, #lenght of criminal career (as an adult)
+         tot_conv = rowSums(select(., contains("PRSCONV"))), #total convictions
+         age_diff_sq = age_difference^2, #criminal career squared
+         age_diff_aux = ifelse(age_difference<1,1,age_difference),
+         rate_offense = totalpriorcharges_adult/age_diff_aux  #number of offenses per year of criminal careeer
+         ) 
+
+```
+
+###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES BUT EP ADDED ALL THE DRUG AND WEAPON VARIABLES
+Transforming characters into classes (factor)
+```{r}
+#drug -- MAKE NA EQUAL TO 0 BECAUSE IF THERE IS NO RECORD IT MEANS THERE WAS NO DRuG INVOLVED
+red$drug[is.na(red$drug)] <- "None"
+
+
+red<- red %>%
+  transform(OFF_SEX = as.factor(OFF_SEX),
+            drug = as.factor(drug), 
+            POSSESSED_USED = as.factor(POSSESSED_USED), 
+            ENHANCEMENT_WEAPONS = as.factor(ENHANCEMENT_WEAPONS)
+        )
+```
+
+###THIS SECTION OF CODE WAS CREATED BY ONE OF MY SYSTEMS TEAMMATES 
+###THERE ARE FEWER OF THESE SINCE I DROPPED THE NEGATIVE OFFENSE AGES AND WE CAPPED AGE AT FIRST AT 18 BUT SINCE THERE ARE PEOPLE THAT ARE CLEARLY ERRONEOUSLY OLD AT DOFAGE AND AGEFIRSTARREST THERE ARE STILL SOME NEGATIVES
+Also, we filtered cases with age difference negative (we keep cases until -1, to avoid problems of age coding integer versus continuous) and 3 cases with age difference greater than 75. We end with 129727 cases
+```{r}
+#table(red$dofage>red$AgeFirstArrest18)
+#table(as.integer(red$dofage))
+#table(as.integer(red$AgeFirstArrest18))
+
+red<- red %>%
+  filter(is.na(age_difference) | (age_difference >= -1 & age_difference <= 75) #to avoid problems of continuous vs integer ages
+         ) 
+
+nrow(red)
+```
+
+####NEW EP DATA CLEANING/CHECKING -- FROM THIS POINT FORWARD THIS IS ALL ORIGINAL CODE
+Since this ML project is about the type of first arrest, I want to make sure the first arrest data looks okay. 
+```{r}
+#50655 do not recidivate
+table(red$totalchargesfirstarrest, exclude = NULL)
+
+#Examine the variables -- determine which are unique and which are different versions of the same
+first <- grep("^firstburglaryt$", colnames(red)) #230
+#last <- grep("^firstPublicOrdert$", colnames(red)) #245
+#last <- grep("^firstkidnappingt$", colnames(red)) #249
+#last <- grep("^firstviolent_middlet$", colnames(red)) #267
+last <- grep("^firstabscondt$", colnames(red)) #247
+red <- red %>%
+  mutate(first_sum = Reduce("+",.[first:last])) #total charges first arrest should match var of same name
+
+
+table(red$totalchargesfirstarrest==red$first_sum)
+#table(red$firstmurdert[red$firstPersonalFt==0 & red$firstPersonalMt==0])
+#NOTE: MURDER IS INCLUDED IN firstPErsonalFt BUT SHOULD BE CODED INTO ITS OWN CATEGORY BECAUSE IT IS WORSE THAN AN F
+#Need to take murders out of firstPErsonalFt
+red$firstPersonalFt <- red$firstPersonalFt - red$firstmurdert
+red <- red %>%
+  mutate(first_sum = Reduce("+",.[first:last]) + firstmurdert) #total charges first arrest should match var of same name
+table(red$totalchargesfirstarrest==red$first_sum)
+
+#For the future crime (variables with "first" in the name), I know the type to crime (burglary, kidnapping, etc) but not the grade (Non-graded, Misdemeanor, Felony, Murder). In order to determine the grade, I am examining the civil code, and where it is not clear, I am looking at the matching variables on crime type for the current crime (for which I do have grade information) to determine what grade each category should be. In most cases this assignment was based on 97% or more (one was 80%). Since people often commit more than one crime in each arrest, I will take the most serious crime. 
+
+#This is to determine how to code the "first" variables which match up to these variables. My assumption is that beaucause these are determined by law if the current burglaries are all felonies (or almost all) then felonies in the next crime variable will also be felonies
+#find variable indices
+first <- grep("^burglary$", colnames(red))
+last <- grep("^publicOrder$", colnames(red))
+
+
+#determining what these crimes are classified as, on average
+for(index in first:last){
+  print(colnames(red)[index])
+  print(prop.table(table(red[[index]], red$grade),1))
+  print('')
+  print('')
+}
+
+#NOTE: No way to figure out domestic charges grade so I am dropping those from the data
+red$totalchargesfirstarrest <- red$totalchargesfirstarrest - red$firstdomestict
+
+
+red$nongrade <- ifelse((red$firstDUIt>0 | red$firstconspiracyt>0),1,0)
+#I checked these all like this
+#table(red$nongrade[red$firstDUIt==0 & red$firstconspiracyt==0])
+
+red$misdemeanor <- ifelse((red$firstpropertyMt > 0 |      #100% are misdemeanors for current crime (also labeled M)
+                          red$firstPersonalMt > 0 |       #100%
+                          red$firstSexOMt > 0 |           #100%
+                          red$firstDrugMt > 0 |           #100%
+                          red$firstOtherTraffict > 0 |    #100%
+                          red$firstOtherweaponst > 0 |    #99%
+                          red$firstPublicAdmt > 0 |       #80%
+                          red$firstPublicOrdert > 0 |     #97%
+                          red$firstabscondt > 0),         #100%
+                          1,0)         
+
+red$felony <- ifelse((red$firstburglaryt > 0 |      #100% are felonies for current crime (also some are labeled F)
+                      red$firstpropertyFt > 0 |     #100%
+                      red$firstPersonalFt > 0 |     #100%
+                      red$firstSexOFt > 0 |         #98%
+                      red$firstDrugFt > 0 |         #99.8%
+                      red$firstFirearmst > 0),      #78%
+                      1,0)                         
+
+red$murder <- ifelse((red$firstmurdert > 0), 1, 0)
+
+#Now I need to select the most serious charge for each person
+#4=murder; 3=felony; 2=misdemeanor; 1=nongraded (DUI and conspiracy); 0=no recidivism in 3 years
+red$toprearrest <- ifelse(red$murder==1, 4,
+                          ifelse(red$felony==1, 3,
+                                 ifelse(red$misdemeanor==1, 2,
+                                        ifelse(red$nongrade==1, 1, 0))))
+red$toprearrest <- as.factor(red$toprearrest)
+table(red$toprearrest)
+#Checking -- this looks good -- # with NO arrest in totalchargesfirstarrest == # with 0 in new variable
+#table(red$totalchargesfirstarrest>0)
+#table(red$toprearrest)
+#table(red$toprearrest, red$murder) -- and all murders are in category 4
+```
+
+```{r}
+#Some of the PRSCONV variables are the same crime but have separate variables because they are coming from different editions of the sentencing guidelines. This does not have any practical meaning data-wise so I am collapsing them. 
+
+#Example of variable and label
+#PRSCONV_9	Number of prior aggravated assault (SBI) convictions
+#PRSCONV_49	Number of prior aggravated assault (SBI) convictions
+red$PRSCONV1_41  <- red$PRSCONV_1  + red$PRSCONV_41
+red$PRSCONV2_42  <- red$PRSCONV_2  + red$PRSCONV_42
+red$PRSCONV3_43  <- red$PRSCONV_3  + red$PRSCONV_43
+red$PRSCONV4_44  <- red$PRSCONV_4  + red$PRSCONV_44
+red$PRSCONV5_45  <- red$PRSCONV_5  + red$PRSCONV_45
+red$PRSCONV8_48  <- red$PRSCONV_8  + red$PRSCONV_48
+red$PRSCONV9_49  <- red$PRSCONV_9  + red$PRSCONV_49
+red$PRSCONV10_59 <- red$PRSCONV_10 + red$PRSCONV_59
+red$PRSCONV11_50 <- red$PRSCONV_11 + red$PRSCONV_50
+red$PRSCONV12_58 <- red$PRSCONV_12 + red$PRSCONV_58
+red$PRSCONV13_61 <- red$PRSCONV_13 + red$PRSCONV_61
+red$PRSCONV18_62 <- red$PRSCONV_18 + red$PRSCONV_62
+red$PRSCONV19_51 <- red$PRSCONV_19 + red$PRSCONV_51
+red$PRSCONV20_53 <- red$PRSCONV_20 + red$PRSCONV_53
+red$PRSCONV21_63 <- red$PRSCONV_21 + red$PRSCONV_63
+red$PRSCONV22_65 <- red$PRSCONV_22 + red$PRSCONV_65
+red$PRSCONV23_64 <- red$PRSCONV_23 + red$PRSCONV_64
+red$PRSCONV24_66 <- red$PRSCONV_24 + red$PRSCONV_66
+red$PRSCONV25_67 <- red$PRSCONV_25 + red$PRSCONV_67
+red$PRSCONV26_68 <- red$PRSCONV_26 + red$PRSCONV_68
+red$PRSCONV28_71 <- red$PRSCONV_28 + red$PRSCONV_71
+red$PRSCONV29_72 <- red$PRSCONV_29 + red$PRSCONV_72
+red$PRSCONV30_74 <- red$PRSCONV_30 + red$PRSCONV_74
+red$PRSCONV31_75 <- red$PRSCONV_31 + red$PRSCONV_75
+red$PRSCONV32_78 <- red$PRSCONV_32 + red$PRSCONV_78
+red$PRSCONV33_79 <- red$PRSCONV_33 + red$PRSCONV_79
+red$PRSCONV34_80 <- red$PRSCONV_34 + red$PRSCONV_80
+red$PRSCONV35_81 <- red$PRSCONV_35 + red$PRSCONV_81
+red$PRSCONV36_82 <- red$PRSCONV_36 + red$PRSCONV_82
+red$PRSCONV37_83 <- red$PRSCONV_37 + red$PRSCONV_83
+red$PRSCONV38_84 <- red$PRSCONV_38 + red$PRSCONV_84
+red$PRSCONV39_76 <- red$PRSCONV_39 + red$PRSCONV_76
+red$PRSCONV40_89 <- red$PRSCONV_40 + red$PRSCONV_89
+
+
+#PRSCONV_7 and PRSCONV_46 are not labeled in our data dictionary, so I am dropping them
+drop <- c("PRSCONV_9","PRSCONV_49","red$PRSCONV_1", "red$PRSCONV_41", "red$PRSCONV_2",  "red$PRSCONV_42", "red$PRSCONV_3",  "red$PRSCONV_43", "red$PRSCONV_4", "red$PRSCONV_44", "red$PRSCONV_5",  "red$PRSCONV_45", "red$PRSCONV_8",  "red$PRSCONV_48",  "red$PRSCONV_9",  "red$PRSCONV_49", "red$PRSCONV_10", "red$PRSCONV_59", "red$PRSCONV_11", "red$PRSCONV_50", "red$PRSCONV_12", "red$PRSCONV_58", "red$PRSCONV_13", "red$PRSCONV_61",  "red$PRSCONV_18", "red$PRSCONV_62", "red$PRSCONV_19", "red$PRSCONV_51", "red$PRSCONV_20", "red$PRSCONV_53", "red$PRSCONV_21", "red$PRSCONV_63", "red$PRSCONV_22", "red$PRSCONV_65",  "red$PRSCONV_23", "red$PRSCONV_64", "red$PRSCONV_24", "red$PRSCONV_66", "red$PRSCONV_25", "red$PRSCONV_67", "red$PRSCONV_26", "red$PRSCONV_68", "red$PRSCONV_28", "red$PRSCONV_71",  "red$PRSCONV_29", "red$PRSCONV_72", "red$PRSCONV_30", "red$PRSCONV_74", "red$PRSCONV_31", "red$PRSCONV_75", "red$PRSCONV_32", "red$PRSCONV_78", "red$PRSCONV_33", "red$PRSCONV_79",  "red$PRSCONV_34", "red$PRSCONV_80", "red$PRSCONV_35", "red$PRSCONV_81", "red$PRSCONV_36", "red$PRSCONV_82", "red$PRSCONV_37", "red$PRSCONV_83", "red$PRSCONV_38", "red$PRSCONV_84",  "red$PRSCONV_39", "red$PRSCONV_76", "red$PRSCONV_40", "red$PRSCONV_89", "PRSCONV_46","PRSCONV_7")
+red = red[,!(names(red) %in% drop)]
+
+save(red, file = "FINAL_red_ML.Rda")
+```
